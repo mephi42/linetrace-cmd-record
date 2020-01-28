@@ -1,0 +1,258 @@
+#!/usr/bin/env python3
+import argparse
+from dataclasses import dataclass
+from io import BytesIO
+import logging
+import re
+import subprocess
+import time
+from typing import List, Union
+
+from elftools.elf.elffile import ELFFile
+from elftools.dwarf.compileunit import CompileUnit
+from elftools.dwarf.die import DIE
+from elftools.dwarf.dwarfinfo import DWARFInfo
+from elftools.dwarf.lineprogram import LineProgram
+from elftools.dwarf.ranges import RangeLists
+
+
+@dataclass
+class Func:
+    name: str
+    begin_offset: int
+
+
+@dataclass
+class FuncRange:
+    func: Func
+    begin_offset: int
+    end_offset: int
+
+
+@dataclass
+class Kprobe:
+    name: str
+    func: str
+    offset: int
+
+    def __str__(self):
+        return 'p:{} {}+0x{:x}'.format(self.name, self.func, self.offset)
+
+
+def uname_r() -> str:
+    return subprocess.check_output(['uname', '-r']).decode().strip()
+
+
+def vmlinux_debuginfo_path() -> str:
+    return '/usr/lib/debug/lib/modules/{}/vmlinux'.format(uname_r())
+
+
+def get_func_ranges(
+        top_die: DIE,
+        range_lists: RangeLists,
+        funcs: List[bytes]
+) -> List[FuncRange]:
+    func_ranges = []
+    # Kernel does not use nested functions, and thus all the functions are at
+    # the top level, and recursion is not needed.
+    for die in top_die.iter_children():
+        if die.tag != 'DW_TAG_subprogram':
+            continue
+        name = die.attributes.get('DW_AT_name')
+        if name is None or name.value not in funcs:
+            continue
+        func_name: str = name.value.decode()
+        low_pc = die.attributes.get('DW_AT_low_pc')
+        high_pc = die.attributes.get('DW_AT_high_pc')
+        range_list_offset = die.attributes.get('DW_AT_ranges')
+        if low_pc is not None:
+            assert high_pc is not None
+            assert range_list_offset is None
+            end_offset = low_pc.value + high_pc.value
+            func = Func(func_name, low_pc.value)
+            func_range = FuncRange(func, low_pc.value, end_offset)
+            func_ranges.append(func_range)
+        else:
+            assert high_pc is None
+            assert range_list_offset is not None
+            range_list = range_lists.get_range_list_at_offset(
+                range_list_offset.value)
+            func = Func(func_name, range_list[0].begin_offset)
+            for range in range_list:
+                func_range = FuncRange(
+                    func, range.begin_offset, range.end_offset)
+                func_ranges.append(func_range)
+    return func_ranges
+
+
+def find_func_range(
+        func_ranges: List[FuncRange],
+        addr: int
+) -> Union[FuncRange, None]:
+    for func_range in func_ranges:
+        if func_range.begin_offset <= addr < func_range.end_offset:
+            return func_range
+    return None
+
+
+def get_kprobes_line_program(
+        line_program: LineProgram,
+        func_ranges: List[FuncRange]
+) -> List[Kprobe]:
+    kprobes = []
+    for entry in line_program.get_entries():
+        if entry.state is None or not entry.state.is_stmt:
+            continue
+        addr = entry.state.address
+        func_range = find_func_range(func_ranges, addr)
+        if func_range is None:
+            continue
+        file_entry = line_program['file_entry'][entry.state.file - 1]
+        file_name = file_entry.name.decode()
+        name = '{name}_L{line}_C{column}_0x{addr:x}'.format(
+            name=re.sub(r'[.-]', '_', file_name),
+            line=entry.state.line,
+            column=entry.state.column,
+            addr=addr,
+        )
+        offset = addr - func_range.func.begin_offset
+        kprobe = Kprobe(name, func_range.func.name, offset)
+        kprobes.append(kprobe)
+    return kprobes
+
+
+def get_kprobes_cu(
+        cu: CompileUnit,
+        dwarf: DWARFInfo,
+        range_lists: RangeLists,
+        funcs_bytes: List[bytes]
+) -> (List[Kprobe], float, float):
+    t_func_ranges0 = time.time()
+    die = cu.get_top_DIE()
+    func_ranges = get_func_ranges(die, range_lists, funcs_bytes)
+    t_func_ranges = time.time() - t_func_ranges0
+    if len(func_ranges) == 0:
+        return [], t_func_ranges, 0.
+    t_line_program0 = time.time()
+    line_program = dwarf.line_program_for_CU(cu)
+    if line_program is None:
+        msg = 'No line program for {}'.format(die.get_full_path())
+        raise Exception(msg)
+    kprobes = get_kprobes_line_program(line_program, func_ranges)
+    t_line_program = time.time() - t_line_program0
+    return kprobes, t_func_ranges, t_line_program
+
+
+def raise_if_missing(funcs: List[str], kprobes: List[Kprobe]) -> None:
+    missing_funcs = set(funcs)
+    for kprobe in kprobes:
+        missing_funcs.discard(kprobe.func)
+    if len(missing_funcs) > 0:
+        err = 'The following functions were not found: {}'.format(
+            ', '.join(missing_funcs))
+        raise Exception(err)
+
+
+def prune_kprobes(kprobes: List[Kprobe]) -> List[Kprobe]:
+    seen = set()
+    pruned = []
+    for kprobe in kprobes:
+        if kprobe.name in seen:
+            continue
+        seen.add(kprobe.name)
+        pruned.append(kprobe)
+    return pruned
+
+
+def get_kprobes_fp(fp, funcs: List[str]) -> List[Kprobe]:
+    logging.info('Parsing DWARF info...')
+    elf = ELFFile(fp)
+    if not elf.has_dwarf_info():
+        raise Exception('No DWARF debuginfo')
+    t0 = time.time()
+    dwarf = elf.get_dwarf_info()
+    range_lists = dwarf.range_lists()
+    logging.info('DWARF info parsed in %.2fs.', time.time() - t0)
+    logging.info('Scanning subprogram DIEs and line number tables...')
+    t_func_ranges = 0.
+    t_line_program = 0.
+    funcs_bytes = [func.encode() for func in funcs]
+    kprobes = []
+    for cu in dwarf.iter_CUs():
+        kprobes_cu, t_func_ranges_cu, t_line_program_cu = \
+            get_kprobes_cu(cu, dwarf, range_lists, funcs_bytes)
+        kprobes.extend(kprobes_cu)
+        t_func_ranges += t_func_ranges_cu
+        t_line_program += t_line_program_cu
+    logging.info('Subprogram DIEs scanned in %.2fs.', t_func_ranges)
+    logging.info('Line number tables scanned in %.2fs.', t_line_program)
+    raise_if_missing(funcs, kprobes)
+    kprobes = prune_kprobes(kprobes)
+    return kprobes
+
+
+def get_kprobes(funcs: List[str]) -> List[Kprobe]:
+    path = vmlinux_debuginfo_path()
+    logging.info('Reading DWARF info...')
+    t0 = time.time()
+    with open(path, 'rb') as fp:
+        elf_data = fp.read()
+    logging.info('DWARF info read in %.2fs.', time.time() - t0)
+    with BytesIO(elf_data) as fp:
+        return get_kprobes_fp(fp, funcs)
+
+
+def set_kprobes(kprobes: List[Kprobe]) -> None:
+    logging.info('Setting kprobes...')
+    t0 = time.time()
+    with open('/sys/kernel/debug/tracing/kprobe_events', 'r+') as fp:
+        for kprobe in kprobes:
+            fp.write(str(kprobe) + '\n')
+    logging.info('kprobes set in %.2fs.', time.time() - t0)
+
+
+def kprobe_set_enabled(kprobe: Kprobe, value: bool):
+    path = '/sys/kernel/debug/tracing/events/kprobes/{name}/enable'.format(
+        name=kprobe.name,
+    )
+    with open(path, 'w') as fp:
+        fp.write('1' if value else '0')
+
+
+def remove_kprobes(kprobes: List[Kprobe]) -> None:
+    logging.info('Removing kprobes...')
+    t0 = time.time()
+    for kprobe in kprobes:
+        kprobe_set_enabled(kprobe, False)
+    with open('/sys/kernel/debug/tracing/kprobe_events', 'r+') as fp:
+        for kprobe in kprobes:
+            fp.write('-:{}\n'.format(kprobe.name))
+    logging.info('kprobes removed in %.2fs.', time.time() - t0)
+
+
+def trace_cmd_record(args: List[str], kprobes: List[Kprobe]) -> None:
+    argv = ['trace-cmd', 'record']
+    for kprobe in kprobes:
+        argv.extend(('-e', kprobe.name))
+    argv.extend(args)
+    subprocess.check_call(argv)
+
+
+def main() -> None:
+    logging.basicConfig(level=logging.INFO)
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-L', action='append')
+    parser.add_argument('rest', nargs='*')
+    args = parser.parse_args()
+    kprobes = get_kprobes([] if args.L is None else args.L)
+    set_kprobes(kprobes)
+    try:
+        trace_cmd_record(args.rest, kprobes)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        remove_kprobes(kprobes)
+
+
+if __name__ == '__main__':
+    main()
