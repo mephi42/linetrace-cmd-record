@@ -9,9 +9,15 @@ lines in specified kernel functions by using kernel debuginfo and kprobes.
 Fedora:
 
 ```
+$ git clone https://github.com/mephi42/linetrace-cmd-record.git
+$ cd linetrace-cmd-record
 $ sudo dnf install -y pypy3
 $ curl https://bootstrap.pypa.io/get-pip.py -o get-pip.py
 $ sudo pypy3 get-pip.py --user
+# Warning: the next command will overwrite your root's private pyelftools with
+# https://github.com/mephi42/pyelftools. This is required in order to fix
+# https://github.com/eliben/pyelftools/issues/270. Hopefully the fix will be
+# upstreamed at some point.
 $ sudo pypy3 -m pip install --upgrade --user -r requirements.txt
 ```
 
@@ -21,7 +27,9 @@ $ sudo pypy3 -m pip install --upgrade --user -r requirements.txt
 $ sudo pypy3 linetrace-cmd-record [-L func] [trace-cmd record args ...]
 ```
 
-Example - debugging rootless podman:
+# Examples
+
+Debugging rootless podman:
 
 ```
 $ sudo pypy3 linetrace-cmd-record -L map_write -p function_graph -g proc_gid_map_write sudo -u $USER podman build $HOME/foo -t foo
