@@ -6,7 +6,7 @@ import logging
 import re
 import subprocess
 import time
-from typing import List, Union
+from typing import List, Set, Tuple, Union
 
 from elftools.elf.elffile import ELFFile
 from elftools.dwarf.compileunit import CompileUnit
@@ -126,7 +126,7 @@ def get_kprobes_cu(
         dwarf: DWARFInfo,
         range_lists: RangeLists,
         funcs_bytes: List[bytes]
-) -> (List[Kprobe], float, float):
+) -> Tuple[List[Kprobe], float, float]:
     t_func_ranges0 = time.time()
     die = cu.get_top_DIE()
     func_ranges = get_func_ranges(die, range_lists, funcs_bytes)
@@ -153,8 +153,8 @@ def raise_if_missing(funcs: List[str], kprobes: List[Kprobe]) -> None:
         raise Exception(err)
 
 
-def prune_kprobes(kprobes: List[Kprobe]) -> List[Kprobe]:
-    seen = set()
+def remove_duplicate_kprobes(kprobes: List[Kprobe]) -> List[Kprobe]:
+    seen: Set[str] = set()
     pruned = []
     for kprobe in kprobes:
         if kprobe.name in seen:
@@ -177,7 +177,7 @@ def get_kprobes_fp(fp, funcs: List[str]) -> List[Kprobe]:
     t_func_ranges = 0.
     t_line_program = 0.
     funcs_bytes = [func.encode() for func in funcs]
-    kprobes = []
+    kprobes: List[Kprobe] = []
     for cu in dwarf.iter_CUs():
         kprobes_cu, t_func_ranges_cu, t_line_program_cu = \
             get_kprobes_cu(cu, dwarf, range_lists, funcs_bytes)
@@ -187,7 +187,7 @@ def get_kprobes_fp(fp, funcs: List[str]) -> List[Kprobe]:
     logging.info('Subprogram DIEs scanned in %.2fs.', t_func_ranges)
     logging.info('Line number tables scanned in %.2fs.', t_line_program)
     raise_if_missing(funcs, kprobes)
-    kprobes = prune_kprobes(kprobes)
+    kprobes = remove_duplicate_kprobes(kprobes)
     return kprobes
 
 
@@ -211,7 +211,7 @@ def set_kprobes(kprobes: List[Kprobe]) -> None:
     logging.info('kprobes set in %.2fs.', time.time() - t0)
 
 
-def kprobe_set_enabled(kprobe: Kprobe, value: bool):
+def kprobe_set_enabled(kprobe: Kprobe, value: bool) -> None:
     path = '/sys/kernel/debug/tracing/events/kprobes/{name}/enable'.format(
         name=kprobe.name,
     )
@@ -234,6 +234,12 @@ def trace_cmd_record(args: List[str], kprobes: List[Kprobe]) -> None:
     argv = ['trace-cmd', 'record']
     for kprobe in kprobes:
         argv.extend(('-e', kprobe.name))
+    blacklist = (
+        'do_per_trap',
+        'illegal_op',
+    )
+    for func in blacklist:
+        argv.extend(('-n', func))
     argv.extend(args)
     subprocess.check_call(argv)
 
@@ -242,12 +248,11 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO)
     parser = argparse.ArgumentParser()
     parser.add_argument('-L', action='append')
-    parser.add_argument('rest', nargs='*')
-    args = parser.parse_args()
+    args, rest = parser.parse_known_args()
     kprobes = get_kprobes([] if args.L is None else args.L)
     set_kprobes(kprobes)
     try:
-        trace_cmd_record(args.rest, kprobes)
+        trace_cmd_record(rest, kprobes)
     except KeyboardInterrupt:
         pass
     finally:
