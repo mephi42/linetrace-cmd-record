@@ -210,7 +210,13 @@ def set_kprobes(kprobes: List[Kprobe]) -> None:
     t0 = time.time()
     with open('/sys/kernel/debug/tracing/kprobe_events', 'r+') as fp:
         for kprobe in kprobes:
-            fp.write(str(kprobe) + '\n')
+            kprobe_str = str(kprobe)
+            try:
+                fp.write(kprobe_str + '\n')
+                fp.flush()
+            except:  # noqa: E722
+                logging.error('Could not write %s.', kprobe_str)
+                raise
     logging.info('kprobes set in %.2fs.', time.time() - t0)
 
 
