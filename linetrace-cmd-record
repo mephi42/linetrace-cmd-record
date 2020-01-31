@@ -58,6 +58,9 @@ def get_func_ranges(
     for die in top_die.iter_children():
         if die.tag != 'DW_TAG_subprogram':
             continue
+        if ('DW_AT_inline' in die.attributes or
+                'DW_AT_declaration' in die.attributes):
+            continue
         name = die.attributes.get('DW_AT_name')
         if name is None or name.value not in funcs:
             continue
