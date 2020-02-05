@@ -1,2 +1,2 @@
 dataclasses == 0.7
-git+git://github.com/mephi42/pyelftools.git
+pyelftools == 0.26

@@ -173,7 +173,10 @@ def get_kprobes_fp(fp, funcs: List[str]) -> List[Kprobe]:
     if not elf.has_dwarf_info():
         raise Exception('No DWARF debuginfo')
     t0 = time.time()
-    dwarf = elf.get_dwarf_info()
+    # should be part of pyelftools, but oh well:
+    # https://github.com/eliben/pyelftools/issues/270
+    is_rel = elf['e_type'] == 'ET_REL'
+    dwarf = elf.get_dwarf_info(relocate_dwarf_sections=is_rel)
     range_lists = dwarf.range_lists()
     logging.info('DWARF info parsed in %.2fs.', time.time() - t0)
     logging.info('Scanning subprogram DIEs and line number tables...')
