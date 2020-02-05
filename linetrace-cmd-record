@@ -3,6 +3,7 @@ import argparse
 from dataclasses import dataclass
 from io import BytesIO
 import logging
+import platform
 import re
 import subprocess
 import time
@@ -246,11 +247,24 @@ def trace_cmd_record(args: List[str], kprobes: List[Kprobe]) -> None:
     argv = ['trace-cmd', 'record']
     for kprobe in kprobes:
         argv.extend(('-e', kprobe.name))
-    blacklist = (
-        'do_per_trap',
-        'illegal_op',
-    )
-    for func in blacklist:
+    blacklist = {
+        's390x': (
+            'do_per_trap',
+            'illegal_op',
+        ),
+        'x86_64': (
+            'kprobe_ftrace_handler',
+            'optimized_callback',
+            'poke_int3_handler',
+            'rcu_nmi_enter',
+            'kgdb_ll_trap',
+            'kprobe_int3_handler',
+            'rcu_nmi_exit',
+            'do_debug',
+            'smp_irq_work_interrupt',
+        )
+    }
+    for func in blacklist.get(platform.machine(), ()):
         argv.extend(('-n', func))
     argv.extend(args)
     subprocess.check_call(argv)
