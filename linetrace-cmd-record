@@ -7,7 +7,7 @@ import platform
 import re
 import subprocess
 import time
-from typing import List, Set, Tuple, Union
+from typing import Dict, Iterable, List, Set, Tuple, Union
 
 from elftools.elf.elffile import ELFFile
 from elftools.dwarf.compileunit import CompileUnit
@@ -46,6 +46,14 @@ def uname_r() -> str:
 
 def vmlinux_debuginfo_path() -> str:
     return '/usr/lib/debug/lib/modules/{}/vmlinux'.format(uname_r())
+
+
+def available_functions() -> Set[str]:
+    result = set()
+    with open('/sys/kernel/debug/tracing/available_filter_functions') as fp:
+        for s in fp:
+            result.add(s.strip())
+    return result
 
 
 def get_func_ranges(
@@ -247,7 +255,7 @@ def trace_cmd_record(args: List[str], kprobes: List[Kprobe]) -> None:
     argv = ['trace-cmd', 'record']
     for kprobe in kprobes:
         argv.extend(('-e', kprobe.name))
-    blacklist = {
+    blacklist: Dict[str, Iterable[str]] = {
         's390x': (
             'do_per_trap',
             'illegal_op',
@@ -261,11 +269,12 @@ def trace_cmd_record(args: List[str], kprobes: List[Kprobe]) -> None:
             'kprobe_int3_handler',
             'rcu_nmi_exit',
             'do_debug',
-            'smp_irq_work_interrupt',
         )
     }
+    available = available_functions()
     for func in blacklist.get(platform.machine(), ()):
-        argv.extend(('-n', func))
+        if func in available:
+            argv.extend(('-n', func))
     argv.extend(args)
     subprocess.check_call(argv)
 
