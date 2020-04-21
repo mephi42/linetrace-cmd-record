@@ -217,19 +217,23 @@ def get_kprobes(funcs: List[str]) -> List[Kprobe]:
         return get_kprobes_fp(fp, funcs)
 
 
-def set_kprobes(kprobes: List[Kprobe]) -> None:
+def set_kprobes(kprobes: List[Kprobe]) -> List[Kprobe]:
     logging.info('Setting kprobes...')
     t0 = time.time()
-    with open('/sys/kernel/debug/tracing/kprobe_events', 'r+') as fp:
+    actually_set = []
+    kprobe_events = '/sys/kernel/debug/tracing/kprobe_events'
+    with open(kprobe_events, 'rb+', buffering=0) as fp:
         for kprobe in kprobes:
             kprobe_str = str(kprobe)
             try:
-                fp.write(kprobe_str + '\n')
+                fp.write((kprobe_str + '\n').encode())
                 fp.flush()
             except:  # noqa: E722
-                logging.error('Could not write %s.', kprobe_str)
-                raise
+                logging.warning('Could not write %s.', kprobe_str)
+                continue
+            actually_set.append(kprobe)
     logging.info('kprobes set in %.2fs.', time.time() - t0)
+    return actually_set
 
 
 def kprobe_set_enabled(kprobe: Kprobe, value: bool) -> None:
@@ -285,7 +289,7 @@ def main() -> None:
     parser.add_argument('-L', action='append')
     args, rest = parser.parse_known_args()
     kprobes = get_kprobes([] if args.L is None else args.L)
-    set_kprobes(kprobes)
+    kprobes = set_kprobes(kprobes)
     try:
         trace_cmd_record(rest, kprobes)
     except KeyboardInterrupt:
