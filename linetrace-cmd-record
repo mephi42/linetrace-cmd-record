@@ -3,6 +3,7 @@ import argparse
 from dataclasses import dataclass
 from io import BytesIO
 import logging
+import os
 import platform
 import re
 import subprocess
@@ -40,12 +41,20 @@ class Kprobe:
         return 'p:{} {}+0x{:x}'.format(self.name, self.func, self.offset)
 
 
-def uname_r() -> str:
+def get_uname_r() -> str:
     return subprocess.check_output(['uname', '-r']).decode().strip()
 
 
 def vmlinux_debuginfo_path() -> str:
-    return '/usr/lib/debug/lib/modules/{}/vmlinux'.format(uname_r())
+    uname_r = get_uname_r()
+    candidates = (
+        '/usr/lib/debug/boot/vmlinux-{}'.format(uname_r),
+        '/usr/lib/debug/lib/modules/{}/vmlinux'.format(uname_r),
+    )
+    for candidate in candidates:
+        if os.path.exists(candidate):
+            return candidate
+    raise Exception('No vmlinux debuginfo, tried: ' + ', '.join(candidates))
 
 
 def available_functions() -> Set[str]:

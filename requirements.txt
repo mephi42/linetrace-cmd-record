@@ -1,2 +1,2 @@
-dataclasses == 0.7
+dataclasses == 0.7; python_version < '3.7'
 pyelftools == 0.26
