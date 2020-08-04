@@ -6,13 +6,11 @@ lines in specified kernel functions by using kernel debuginfo and kprobes.
 
 # Installation
 
-Fedora:
-
 ```
 git clone https://github.com/mephi42/linetrace-cmd-record.git
 cd linetrace-cmd-record
-sudo dnf install -y pypy3
-# Ubuntu: apt install -y "linux-image-$(uname -r)-dbgsym" pypy3 trace-cmd
+# Fedora: sudo dnf install --enablerepo=updates-debuginfo -y "kernel-debuginfo-$(uname -r)" pypy3 trace-cmd
+# Ubuntu: sudo apt install -y "linux-image-$(uname -r)-dbgsym" pypy3 trace-cmd
 curl https://bootstrap.pypa.io/get-pip.py -o get-pip.py
 sudo pypy3 get-pip.py --user
 sudo pypy3 -m pip install --upgrade --user -r requirements.txt
