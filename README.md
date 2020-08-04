@@ -7,10 +7,10 @@ lines in specified kernel functions by using kernel debuginfo and kprobes.
 # Installation
 
 ```
+# Fedora: sudo dnf install --enablerepo=updates-debuginfo -y git "kernel-debuginfo-$(uname -r)" pypy3 trace-cmd
+# Ubuntu: sudo apt install -y git "linux-image-$(uname -r)-dbgsym" pypy3 trace-cmd
 git clone https://github.com/mephi42/linetrace-cmd-record.git
 cd linetrace-cmd-record
-# Fedora: sudo dnf install --enablerepo=updates-debuginfo -y "kernel-debuginfo-$(uname -r)" pypy3 trace-cmd
-# Ubuntu: sudo apt install -y "linux-image-$(uname -r)-dbgsym" pypy3 trace-cmd
 curl https://bootstrap.pypa.io/get-pip.py -o get-pip.py
 sudo pypy3 get-pip.py --user
 sudo pypy3 -m pip install --upgrade --user -r requirements.txt
@@ -49,4 +49,10 @@ $ trace-cmd report | grep -v -e ^CPU -e ^cpus= | head -n 20
            <...>-1571473 [005] 1198357.632256: funcgraph_exit:         0.690 us   |        }
            <...>-1571473 [005] 1198357.632256: funcgraph_entry:        0.179 us   |        raw_copy_from_user();
            <...>-1571473 [005] 1198357.632256: funcgraph_exit:         1.112 us   |      }
+```
+
+Debugging BTF loading:
+
+```
+# pypy3 ~/linetrace-cmd-record/linetrace-cmd-record -L btf_new_fd -p function_graph -g btf_new_fd bpftool prog load flow.o /sys/fs/bpf/flow
 ```
